@@ -26,9 +26,8 @@ pipeline {
         }
 
         stage('Construir imagen') {
-            agent any   // el nodo de Jenkins tiene el cliente Docker
+            agent any
             steps {
-                // Dockerfile multi-etapa: compila con Maven y deja solo el JRE + el .jar
                 sh 'docker build --network host -t $IMAGEN .'   // Maven descarga dependencias dentro del build
             }
         }
@@ -36,7 +35,6 @@ pipeline {
         stage('Smoke test') {
             agent any
             steps {
-                // El contenedor corre en el demonio dind; Jenkins lo alcanza por el alias "docker"
                 sh '''
                     docker run -d --name $CONTENEDOR -p 18000:8000 $IMAGEN
                     for i in $(seq 1 15); do
@@ -53,22 +51,34 @@ pipeline {
             }
         }
 
+        // Solo se llega aquí si las pruebas y el smoke test pasaron.
         stage('Desplegar') {
             agent any
             steps {
                 sh '''
-                docker rm -f taller-app || true
-                docker run -d --name taller-app --restart unless-stopped -p
+                    # Reemplazar la versión en ejecución por la nueva
+                    docker rm -f taller-app || true
+                    docker run -d --name taller-app --restart unless-stopped -p 8000:8000 $IMAGEN
 
-                8000:8000 $IMAGEN
-                sleep 5
-                curl -fs http://docker:8000/version
+                    # Verificar que la versión desplegada responde
+                    for i in $(seq 1 15); do
+                        if curl -fs http://docker:8000/version; then
+                            echo ""
+                            echo "Desplegada $IMAGEN en http://localhost:8000"
+                            exit 0
+                        fi
+                        sleep 2
+                    done
+                    echo "El despliegue no respondió en /version"
+                    docker logs taller-app
+                    exit 1
                 '''
             }
         }
     }
 
     post {
-        success { echo "Imagen lista: ${env.IMAGEN}" }
+        success { echo "Despliegue OK: ${env.IMAGEN}" }
+        failure { echo 'El pipeline falló: la versión anterior sigue desplegada (si la había).' }
     }
 }
